@@ -1,37 +1,37 @@
-#include "macro_tool.hh"
+#include "macro_tool.hxx"
 
-double KeyboardMacro::getUnixTime() {
+uint64_t KeyboardMacro::getUnixTime() {
     using namespace std::chrono;
     
     const auto time_since_epoch = system_clock::now().time_since_epoch();
     milliseconds ms_since_epoch = duration_cast<milliseconds>(time_since_epoch);
     
-    return static_cast<double>(ms_since_epoch.count());
+    return static_cast<uint64_t>(ms_since_epoch.count());
 }
 
-bool KeyboardMacro::keyIsPressed(uint16_t vkid) {
+bool KeyboardMacro::keyIsPressed(uint8_t vkid) {
     return (GetAsyncKeyState(vkid) * 0x8000) != 0;
 }
 
-KeyboardMacro::KeyboardInput::KeyboardInput(uint16_t vkid, double delay) {
+KeyboardMacro::KeyboardInput::KeyboardInput(uint8_t vkid, uint32_t delay) {
     Vkid = vkid;
     Delay = delay;
     ReleaseDelay = 100;
 }
 
-KeyboardMacro::KeyboardInput::KeyboardInput(uint16_t vkid, double delay, double release_delay) {
+KeyboardMacro::KeyboardInput::KeyboardInput(uint8_t vkid, uint32_t delay, uint32_t release_delay) {
     Vkid = vkid;
     Delay = delay;
     ReleaseDelay = release_delay;
 }
 
-void KeyboardMacro::recorderThreadWorker(const uint16_t target_vkid) {
+void KeyboardMacro::recorderThreadWorker(const uint8_t target_vkid) {
     runningThreads += 1;
 
     for(;recordingActive;Sleep(1)) {
         if(keyIsPressed(target_vkid)) {       
             uint32_t last_input_index = 0;
-            double pressed_timestamp = 0;
+            uint64_t pressed_timestamp = 0;
         
             {
                 std::lock_guard<std::mutex> lock_guard(macroInputsMutex);
@@ -64,10 +64,10 @@ void KeyboardMacro::Record() {
         
         std::cout << "Starting recorder threads.. " << std::endl;
         
-        for(uint16_t vkid=0; vkid<0xFF; ++vkid) {
-            recorderThreads.emplace_back(std::thread([this](uint16_t target_vkid) -> void { 
+        for(uint8_t vkid=0; vkid<0xFF; ++vkid) {
+            recorderThreads.emplace_back(std::thread([this](uint8_t target_vkid) -> void { 
                 recorderThreadWorker(target_vkid);
-            }, vkid));            
+            }, vkid));           
         }
         
         std::cout << std::endl;
@@ -103,7 +103,7 @@ void KeyboardMacro::Play() {
             Sleep(input.Delay);
             SendInput(1, &input_config, sizeof(input_config));
         
-            release_threads.emplace_back([](uint16_t vkid, double delay) -> void {
+            release_threads.emplace_back([](uint8_t vkid, uint32_t delay) -> void {
                 INPUT input_config;
                 
                 input_config.type = INPUT_KEYBOARD;
@@ -124,45 +124,79 @@ void KeyboardMacro::Play() {
     }
 }
 
-Json KeyboardMacro::DumpMacroJson() {
+std::string KeyboardMacro::DumpMacroString(bool hex_vkid) {
+    Json macro_json = DumpMacroJson(hex_vkid);
+    return macro_json.dump();
+}
+
+void KeyboardMacro::LoadMacroString(std::string macro_json_string, bool hex_vkid) {
+    Json macro_json = Json::parse(macro_json_string);
+    LoadMacroJson(macro_json, hex_vkid);
+}
+
+Json KeyboardMacro::DumpMacroJson(bool hex_vkid) {
     Json serialized_macro;
     
     for(const auto& macro_input : macroInputs) {
-        std::tuple<uint16_t, double, double>  input_tuple;
+        if(hex_vkid) {
+            std::tuple<std::string, uint32_t, uint32_t>  input_tuple;
         
-        std::get<0>(input_tuple) = macro_input.Vkid;
-        std::get<1>(input_tuple) = macro_input.Delay;
-        std::get<2>(input_tuple) = macro_input.ReleaseDelay;
+            std::stringstream vkid_hex_stream;
+            vkid_hex_stream << std::hex << macro_input.Vkid;
+            std::string vkid_hex = vkid_hex_stream.str();
+        
+            std::get<0>(input_tuple) = vkid_hex;
+            std::get<1>(input_tuple) = macro_input.Delay;
+            std::get<2>(input_tuple) = macro_input.ReleaseDelay;
     
-        serialized_macro.push_back(input_tuple);
+            serialized_macro.push_back(input_tuple);
+        } else {
+            std::tuple<uint8_t, uint32_t, uint32_t> input_tuple;
+            
+            std::get<0>(input_tuple) = macro_input.Vkid;
+            std::get<1>(input_tuple) = macro_input.Delay;
+            std::get<2>(input_tuple) = macro_input.ReleaseDelay;
+            
+            serialized_macro.push_back(input_tuple);
+        }
     }
     
     return serialized_macro;    
 }
 
-void KeyboardMacro::LoadMacroJson(const Json& json_macro) {
+void KeyboardMacro::LoadMacroJson(const Json& json_macro, bool hex_vkid) {
     macroInputs.clear();
 
-    for(const auto& input : json_macro) {
-        macroInputs.push_back(KeyboardInput(
-            input.at(0).get<uint16_t>(),
-            input.at(1).get<double>(),
-            input.at(2).get<double>()
-        ));
+    if(hex_vkid) {
+        for(const auto& input : json_macro) {
+            macroInputs.push_back(KeyboardInput(
+                static_cast<uint8_t>(strtol(input.at(0).get<std::string>().c_str(), 0, 16)),
+                input.at(1).get<uint32_t>(),
+                input.at(2).get<uint32_t>()
+            ));
+        }
+    } else {
+        for(const auto& input : json_macro) {
+            macroInputs.push_back(KeyboardInput(
+                input.at(0).get<uint8_t>(),
+                input.at(1).get<uint32_t>(),
+                input.at(2).get<uint32_t>()
+            ));
+        }
     }
 }
 
-void KeyboardMacro::DumpMacroFile(const std::string& file_path) {
+void KeyboardMacro::DumpMacroFile(const std::string& file_path, bool hex_vkid) {
     std::ofstream ofile_stream(file_path, std::ios::binary);
     
     if(ofile_stream.good()) {
-        std::string serialized_macro = DumpMacroJson().dump();
+        std::string serialized_macro = DumpMacroJson(hex_vkid).dump();
         ofile_stream.write(serialized_macro.data(), serialized_macro.size());
         ofile_stream.close();
     }
 }
 
-void KeyboardMacro::LoadMacroFile(const std::string& file_path) {
+void KeyboardMacro::LoadMacroFile(const std::string& file_path, bool hex_vkid) {
     std::ifstream ifile_stream(file_path, std::ios::binary);
     
     if(ifile_stream.good()) {
@@ -173,7 +207,7 @@ void KeyboardMacro::LoadMacroFile(const std::string& file_path) {
         memcpy(file_bytes_string.data(), file_bytes.data(), file_bytes.size());
         
         Json macro_json = Json::parse(file_bytes_string);
-        LoadMacroJson(macro_json);
+        LoadMacroJson(macro_json, hex_vkid);
     }
 }
 

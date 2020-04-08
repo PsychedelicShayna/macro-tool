@@ -1,14 +1,9 @@
 #include <iostream>
-
-#include "macro_tool.hh"
+#include "macro_tool.hxx"
 
 int main() {
     std::cout << "Program started." << std::endl;
-
     KeyboardMacro macro;
-
-    std::atomic<bool> thread_kill;
-    std::thread macro_looper;
 
     for(;;Sleep(10)) {
         if((GetAsyncKeyState(0x6A) & 0x8000) != 0) {
